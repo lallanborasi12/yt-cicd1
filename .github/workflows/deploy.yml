@@ -1,0 +1,132 @@
+name: Deploy React App to EC2
+
+on:
+push:
+branches: [main]
+workflow_dispatch:
+
+jobs:
+build:
+name: Build React Application
+runs-on: ubuntu-latest
+
+
+steps:
+  - name: Checkout Source Code
+    uses: actions/checkout@v4
+
+  - name: Setup Node.js
+    uses: actions/setup-node@v4
+    with:
+      node-version: "20"
+      cache: "npm"
+
+  - name: Install Dependencies
+    run: npm ci
+
+  - name: Build React Application
+    run: npm run build
+
+  - name: Create Deployment Package
+    run: |
+      mkdir -p deploy
+      cp -r build deploy/
+      tar -czf deploy.tar.gz -C deploy .
+
+  - name: Upload Artifact
+    uses: actions/upload-artifact@v4
+    with:
+      name: react-build
+      path: deploy.tar.gz
+      retention-days: 1
+deploy:
+name: Deploy to EC2
+needs: build
+runs-on: ubuntu-latest
+
+```
+steps:
+  - name: Download Artifact
+    uses: actions/download-artifact@v4
+    with:
+      name: react-build
+
+  - name: Deploy via SSH
+    env:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+      SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+    run: |
+      echo "$SSH_PRIVATE_KEY" > private_key.pem
+      chmod 600 private_key.pem
+
+      scp -i private_key.pem -o StrictHostKeyChecking=no \
+        deploy.tar.gz ${EC2_USERNAME}@${EC2_HOST}:/tmp/
+
+      ssh -i private_key.pem -o StrictHostKeyChecking=no \
+        ${EC2_USERNAME}@${EC2_HOST} << 'EOF'
+
+        echo "Starting deployment..."
+
+        sudo mkdir -p /var/www/html
+
+        # Backup existing site
+        if [ -d "/var/www/html" ]; then
+          sudo mkdir -p /var/www/backups
+          timestamp=$(date +%Y%m%d_%H%M%S)
+
+          sudo tar -czf \
+            /var/www/backups/react_backup_${timestamp}.tar.gz \
+            /var/www/html 2>/dev/null || true
+
+          sudo ls -t /var/www/backups/react_backup_*.tar.gz \
+            | tail -n +6 \
+            | xargs -r sudo rm
+        fi
+
+        # Extract build
+        mkdir -p /tmp/react-deploy
+        rm -rf /tmp/react-deploy/*
+        tar -xzf /tmp/deploy.tar.gz -C /tmp/react-deploy
+
+        # Replace old files
+        sudo rm -rf /var/www/html/*
+        sudo cp -r /tmp/react-deploy/build/* /var/www/html/
+
+        # Permissions
+        sudo chown -R www-data:www-data /var/www/html
+
+        # Reload nginx
+        sudo nginx -t
+        sudo systemctl reload nginx
+
+        rm -rf /tmp/react-deploy
+        rm -f /tmp/deploy.tar.gz
+
+        echo "Deployment completed successfully"
+
+      EOF
+
+      rm -f private_key.pem
+
+  - name: Verify Deployment
+    env:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+    run: |
+      echo "Waiting for website..."
+      sleep 15
+
+      for i in {1..5}; do
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://${EC2_HOST} || echo "000")
+
+        if [ "$STATUS" = "200" ] || [ "$STATUS" = "301" ] || [ "$STATUS" = "302" ]; then
+          echo "Deployment Successful - HTTP Status: $STATUS"
+          exit 0
+        fi
+
+        echo "Attempt $i failed. Status: $STATUS"
+        sleep 10
+      done
+
+      echo "Deployment Verification Failed"
+      exit 1
