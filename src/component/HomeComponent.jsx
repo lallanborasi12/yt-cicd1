@@ -2,12 +2,6 @@ import { motion } from "framer-motion";
 import ImageShowcase from "./ImageShowcase";
 import Review from './Review'
 import FAQ from './FAQ'
-import HydrationGuide from './HydrationGuide'
-import DrinklyLanding from './DrinklyLanding'
-const fadeUp = {
-  hidden: { opacity: 0, y: 40 },
-  visible: { opacity: 1, y: 0 },
-};
 const features = [
   {
     icon: "💧",
