@@ -1,88 +1,94 @@
-name: Deploy React App to EC2
-on:push:branches:- mainworkflow_dispatch:
-jobs:build:name:Build React Applicationruns-on: ubuntu-latest
-steps:
-  - name: Checkout Source Code
-    uses: actions/checkout@v4
+name: React CI/CD Deployment
 
-  - name: Setup Node.js
-    uses: actions/setup-node@v4
-    with:
-      node-version: "20"
-      cache: "npm"
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
-  - name: Install Dependencies
-    run: npm ci
+jobs:
+  build:
+    name: Build React App
+    runs-on: ubuntu-latest
 
-  - name: Build React Application
-    run: npm run build
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
 
-  - name: Create Deployment Package
-    run: |
-      mkdir -p deploy
-      cp -r build deploy/
-      tar -czf deploy.tar.gz -C deploy .
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
 
-  - name: Upload Artifact
-    uses: actions/upload-artifact@v4
-    with:
-      name: react-build
-      path: deploy.tar.gz
-      retention-days: 1
-deploy:name:Deploy to EC2needs: Buildruns-on: ubuntu-latest
+      - name: Install Dependencies
+        run: npm ci
 
-steps:
-  - name: Download Artifact
-    uses: actions/download-artifact@v4
-    with:
-      name: react-build
+      - name: Build Application
+        run: npm run build
 
-  - name: Deploy via SSH
-    env:
-      EC2_HOST: ${{ secrets.EC2_HOST }}
-      EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
-      SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
-    run: |
-      echo "$SSH_PRIVATE_KEY" > private_key.pem
-      chmod 600 private_key.pem
+      - name: Archive Build
+        run: tar -czf build.tar.gz build
 
-      scp -i private_key.pem -o StrictHostKeyChecking=no deploy.tar.gz ${EC2_USERNAME}@${EC2_HOST}:/tmp/
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: react-build
+          path: build.tar.gz
 
-      ssh -i private_key.pem -o StrictHostKeyChecking=no ${EC2_USERNAME}@${EC2_HOST} << 'EOF'
+  deploy:
+    name: Deploy to EC2
+    needs: build
+    runs-on: ubuntu-latest
 
-      sudo mkdir -p /var/www/html
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: react-build
 
-      mkdir -p /tmp/react-deploy
-      rm -rf /tmp/react-deploy/*
-      tar -xzf /tmp/deploy.tar.gz -C /tmp/react-deploy
+      - name: Configure SSH Key
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" > private_key.pem
+          chmod 600 private_key.pem
 
-      sudo rm -rf /var/www/html/*
-      sudo cp -r /tmp/react-deploy/build/* /var/www/html/
+      - name: Upload Build to EC2
+        run: |
+          scp -o StrictHostKeyChecking=no \
+            -i private_key.pem \
+            build.tar.gz \
+            ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:/tmp/build.tar.gz
 
-      sudo chown -R www-data:www-data /var/www/html
+      - name: Deploy on EC2
+        run: |
+          ssh -o StrictHostKeyChecking=no \
+            -i private_key.pem \
+            ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} << 'EOF'
+          sudo mkdir -p /var/www/react-app
+          cd /tmp
+          rm -rf react-build
+          mkdir react-build
+          tar -xzf build.tar.gz -C react-build
+          sudo rm -rf /var/www/react-app/*
+          sudo cp -r react-build/build/* /var/www/react-app/
+          sudo chown -R www-data:www-data /var/www/react-app
+          sudo nginx -t
+          sudo systemctl restart nginx
+          rm -rf react-build
+          rm -f build.tar.gz
+          EOF
 
-      sudo nginx -t
-      sudo systemctl reload nginx
+      - name: Cleanup
+        run: rm -f private_key.pem
 
-      rm -rf /tmp/react-deploy
-      rm -f /tmp/deploy.tar.gz
-
-      EOF
-
-      rm -f private_key.pem
-
-  - name: Verify Deployment
-    env:
-      EC2_HOST: ${{ secrets.EC2_HOST }}
-    run: |
-      sleep 15
-
-      STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://${EC2_HOST} || echo "000")
-
-      if [ "$STATUS" = "200" ] || [ "$STATUS" = "301" ] || [ "$STATUS" = "302" ]; then
-        echo "Deployment Successful"
-        exit 0
-      fi
-
-      echo "Deployment Failed"
-      exit 1
+      - name: Verify Deployment
+        run: |
+          sleep 10
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://${{ secrets.EC2_HOST }})
+          echo "HTTP Status: $STATUS"
+          if [ "$STATUS" = "200" ] || [ "$STATUS" = "301" ] || [ "$STATUS" = "302" ]; then
+            echo "Deployment Successful"
+            exit 0
+          fi
+          echo "Deployment Failed"
+          exit 1
