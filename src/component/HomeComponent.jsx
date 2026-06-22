@@ -2,7 +2,6 @@ import { motion } from "framer-motion";
 import ImageShowcase from "./ImageShowcase";
 import Review from './Review'
 import FAQ from './FAQ'
-import PackedFeatures from './PackedFeatures'
 import HydrationGuide from './HydrationGuide'
 import DrinklyLanding from './DrinklyLanding'
 const fadeUp = {
@@ -155,7 +154,7 @@ export default function HomeComponent() {
             className="flex justify-center"
           >
             <div className="w-64 h-64 rounded-3xl bg-white/20 flex items-center justify-center">
-              <img className="max-w-48 w-full" src="../images/apple.png" />
+            <img className="max-w-48 w-full" src="../images/apple.png" />
             </div>
           </motion.div>
         </div>
